@@ -1,0 +1,76 @@
+{
+  "lang": "zh-TW",
+  "title": "頁面標題：一句話說這頁在解決什麼",
+  "subtitle": "選填。說明哪些互動是模擬、不是真的系統。",
+  "summary": "核心衝突，一句話。",
+  "sections": [
+    {
+      "title": "問題 1：用使用者的話命名",
+      "blocks": [
+        { "type": "text", "text": "先用白話說這個問題是什麼。可以用 **粗體** 和 `code`。\n\n空一行就是新段落。" },
+        { "type": "callout", "tone": "warn", "text": "tone 可選 info / ok / warn / bad / neutral。" },
+        {
+          "type": "flow",
+          "rows": [
+            {
+              "label": "現在",
+              "nodes": [
+                { "text": "步驟 A", "sub": "小字說明", "tone": "neutral" },
+                { "text": "步驟 B", "tone": "warn" },
+                { "text": "結果", "tone": "bad" }
+              ],
+              "note": "選填：這一列的補充。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "問題 2：要讓使用者「感受」差異時才用互動",
+      "blocks": [
+        {
+          "type": "compare",
+          "title": "選一個模式看看",
+          "modes": [
+            { "id": "a", "label": "做法 A", "description": "一句話", "tone": "ok", "result": "使用者在這個模式會看到或聽到什麼。" },
+            { "id": "b", "label": "做法 B", "description": "一句話", "tone": "bad", "result": "另一個模式的結果。" }
+          ]
+        },
+        {
+          "type": "slider",
+          "label": "音訊長度",
+          "unit": "秒",
+          "min": 10, "max": 600, "step": 10, "value": 300,
+          "outputs": [
+            { "label": "記憶體", "unit": "MiB", "formula": "x * 44100 * 2 * 4 / 1048576", "decimals": 0 }
+          ],
+          "limit": { "value": 64, "output": 0, "over": "超過 64 MiB 上限", "under": "在上限內" }
+        },
+        {
+          "type": "table",
+          "head": ["做法", "好處", "代價"],
+          "rows": [["A", "簡單", "聽不到被剪掉的"], ["B", "完整", "要多一條路徑"]],
+          "highlightRow": 0
+        }
+      ]
+    }
+  ],
+  "verified": [
+    { "claim": "已經確認的事", "source": "這次讀了哪個檔案第幾行、或跑了什麼指令" }
+  ],
+  "unverified": [
+    { "claim": "只是推論、記憶或「應該可以」的事", "howToVerify": "什麼動作可以確認它" }
+  ],
+  "decisions": [
+    {
+      "id": "audio",
+      "section": 2,
+      "title": "30 字內的短標題",
+      "question": "一句完整的問句，不看左邊頁面也能懂。",
+      "options": [
+        { "id": "a", "label": "做法 A", "recommended": true, "description": "它的代價，不只是它是什麼。" },
+        { "id": "b", "label": "做法 B", "description": "它的代價。" }
+      ]
+    }
+  ]
+}

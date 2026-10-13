@@ -6,6 +6,12 @@ When an AI conversation turns into a wall of explanations and scattered question
 
 **Show the difference—not just another list of options.**
 
+## A look at the stage
+
+![Decision Stage: interactive comparisons and a slider on the left, linked questions and notes on the right](docs/images/decision-stage.png)
+
+*An actual browser screenshot of a simulated editor-design discussion. Explore the alternatives on the left, then choose an option or write your own answer on the right. No real project or personal session data is shown.*
+
 ## What it does
 
 - **Makes trade-offs visible.** Use flows, mode comparisons, sliders, tables, or custom interactive simulations to explain what changes between options.

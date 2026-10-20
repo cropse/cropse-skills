@@ -9,6 +9,10 @@ Each skill is self-contained: its instructions, scripts, assets, and tests live 
 | Skill | What it helps with |
 | --- | --- |
 | [Decision Stage](skills/decision-stage/README.md) | Show options through diagrams and interactive demonstrations, collect answers and notes, and preserve decisions across rounds. |
+| [Grill Me](skills/grill-me/SKILL.md) | Explicit shortcut to Grilling; install both skills together. |
+| [Grilling](skills/grilling/SKILL.md) | Stress-test plans, decisions, and ideas through rounds of branching questions and recommendations. |
+
+Grill Me and Grilling are unmodified imports from [Matt Pocock's skills](https://github.com/mattpocock/skills), pinned to commit `5beb35b040e3de97e54fa9e386d7e42d15c295c2`. Each includes the upstream MIT license. To install them, copy both `skills/grill-me` and `skills/grilling` into your harness's supported skill directory. No runtime dependencies are required.
 
 ## Decision Stage
 

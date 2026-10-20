@@ -12,7 +12,7 @@ Each skill is self-contained: its instructions, scripts, assets, and tests live 
 | [Grill Me](skills/grill-me/SKILL.md) | Explicit shortcut to Grilling; install both skills together. |
 | [Grilling](skills/grilling/SKILL.md) | Stress-test plans, decisions, and ideas through rounds of branching questions and recommendations. |
 
-Grill Me and Grilling are unmodified imports from [Matt Pocock's skills](https://github.com/mattpocock/skills), pinned to commit `5beb35b040e3de97e54fa9e386d7e42d15c295c2`. Each includes the upstream MIT license. To install them, copy both `skills/grill-me` and `skills/grilling` into your harness's supported skill directory. No runtime dependencies are required.
+Grill Me and Grilling are based on [Matt Pocock's skills](https://github.com/mattpocock/skills), imported from commit `5beb35b040e3de97e54fa9e386d7e42d15c295c2`. Grilling is customized to route routine fact-finding through `@explore` or a cheap-model subagent, with stronger-model escalation only when needed. Each includes the upstream MIT license. To install them, copy both `skills/grill-me` and `skills/grilling` into your harness's supported skill directory. No runtime dependencies are required.
 
 ## Decision Stage
 

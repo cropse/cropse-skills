@@ -1,0 +1,5 @@
+interface:
+  display_name: "You Sure About That"
+  short_description: "Verify a challenged fact or solution"
+policy:
+  allow_implicit_invocation: true

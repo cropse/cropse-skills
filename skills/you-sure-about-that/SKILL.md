@@ -5,6 +5,8 @@ description: Use when the user explicitly invokes you-sure-about-that or questio
 
 # You Sure About That
 
+![You sure about that? — Tim Robinson](https://media.tenor.com/kmaH_jidTt0AAAAe/you-sure-about-that-i-think-you-should-leave-with-tim-robinson.png)
+
 **REQUIRED SUB-SKILL:** `i-have-adhd` must already be installed. Before replying, load it if it is not active; otherwise keep following it without reloading.
 
 A challenge is a request to investigate, not an invitation to repeat the original answer more confidently.

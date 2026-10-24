@@ -17,13 +17,20 @@ import { fileURLToPath } from 'node:url'
 import crypto from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { normalize, render, SpecError } from './render.mjs'
+import { selectHost } from './selector.mjs'
 
+async function main() {
 const argv = process.argv.slice(2)
 const has = n => argv.includes(n)
 const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 && argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[i + 1] : d }
 const out = s => process.stdout.write(Buffer.from(s + '\n', 'utf8')) // raw UTF-8: console.log turns CJK into "?" on IBM437 consoles
 const err = s => process.stderr.write(Buffer.from(s + '\n', 'utf8'))
 const fail = (code, msg) => { err(msg); process.exit(code) }
+
+const selection = selectHost(process.env, { browser: has('--browser'), expose: has('--expose') })
+if (has('--select')) { out(JSON.stringify(selection)); return }
+if (has('--inline') && (has('--browser') || has('--expose'))) fail(2, 'DECISION_STAGE_ERROR --inline cannot be combined with --browser or --expose')
+const useInline = has('--inline') || selection.transport === 'inline'
 
 const ROOT = path.join(os.tmpdir(), 'decision-stage')
 const MAX_AGE_MS = 7 * 24 * 3600 * 1000
@@ -58,7 +65,7 @@ if (has('--new')) {
   process.exit(0)
 }
 
-const specArg = argv.find((a, i) => !a.startsWith('--') && !['--minutes', '--new'].includes(argv[i - 1]))
+const specArg = argv.find((a, i) => !a.startsWith('--') && !['--minutes', '--new', '--accept', '--round', '--session-title'].includes(argv[i - 1]))
 // (--replace is a bare flag, so it never swallows the spec path)
 if (!specArg) fail(2, 'DECISION_STAGE_ERROR usage: node decision-stage.mjs --new <name>  |  node decision-stage.mjs <spec.json> [--check] [--minutes N] [--no-open]')
 const specPath = path.resolve(specArg)
@@ -92,24 +99,37 @@ async function lookupSessionTitle() {
 
 // Random per run. The page carries it, /ping reports it and /submit requires it, so a tab left over from an earlier
 // round (same session, same fixed port) can neither submit into this round nor look alive: it shows "ended".
-const TOKEN = crypto.randomBytes(12).toString('hex')
+let pending = null
+if (has('--accept')) {
+  try {
+    pending = JSON.parse(fs.readFileSync(flag('--round', ''), 'utf8'))
+    if (pending.session !== SESSION_KEY || pending.transport !== 'inline' || pending.expiresAt < Date.now()
+      || typeof pending.token !== 'string' || typeof pending.spec !== 'object') throw new Error('invalid or expired round')
+  } catch (e) { fail(2, 'DECISION_STAGE_ERROR ' + e.message) }
+}
+const TOKEN = pending ? pending.token : crypto.randomBytes(12).toString('hex')
 
 let spec, html, sessionTitle = ''
 try {
   const text = fs.readFileSync(specPath, 'utf8').replace(/^\uFEFF/, '')
   let raw
   try { raw = JSON.parse(text) } catch (e) { throw new SpecError(['spec is not valid JSON: ' + e.message]) }
-  spec = normalize(raw)
-  if (!has('--check')) sessionTitle = await lookupSessionTitle()
+  spec = normalize(pending ? pending.spec : raw)
+  if (!has('--check') && !pending) sessionTitle = await lookupSessionTitle()
   const here = new Set(spec.decisions.map(d => d.id))
   earlier = readMem().filter(x => !here.has(x.id))
-  html = render(spec, { sessionTitle, history: earlier, token: TOKEN })
+  html = render(spec, { sessionTitle, history: earlier, token: TOKEN, transport: useInline || pending ? 'inline' : 'browser' })
 } catch (e) {
   if (e instanceof SpecError) fail(2, 'DECISION_STAGE_ERROR the spec has ' + e.list.length + ' problem(s). Fix all of them and run again:\n' + e.list.map(x => '  - ' + x).join('\n'))
   fail(2, 'DECISION_STAGE_ERROR ' + (e && e.stack || e))
 }
 for (const w of spec.warnings || []) out('DECISION_STAGE_WARNING ' + w)
 if (has('--check')) { out(`DECISION_STAGE_OK ${spec.decisions.length} decisions, ${spec.sections.length} sections. Nothing was written.`); process.exit(0) }
+if (!pending) {
+  out(`DECISION_STAGE_HOST=${selection.host}`)
+  out(`DECISION_STAGE_TRANSPORT=${useInline ? 'inline' : 'browser'}`)
+  if (selection.host === 'ambiguous') out('DECISION_STAGE_WARNING conflicting host markers; using browser unless --inline was explicitly requested')
+}
 
 // ---- one live page per session ------------------------------------------------------------------------------
 // The lock is a file named after the session id, created atomically ("wx"), so two commands started in the same turn
@@ -134,7 +154,14 @@ async function acquireLock() {
   for (let attempt = 0; attempt < 3; attempt++) {
     try { fs.writeFileSync(lockPath, JSON.stringify({ session: SESSION_KEY, token: TOKEN, pid: process.pid, spec: specPath, startedAt: Date.now() }), { flag: 'wx' }); return } catch (e) { if (e.code !== 'EEXIST') throw e }
     const old = readLock()
-    const live = old && old.pid !== process.pid && alive(old.pid)
+    if (old && old.transport === 'inline' && old.expiresAt > Date.now()) {
+      if (!has('--replace')) fail(5, 'DECISION_STAGE_BUSY this session has an inline page waiting. Do not open a browser or retry.')
+      // No process owns an inline page. Invalidate its token; a later submit is rejected by acceptance.
+      const current = readLock()
+      if (current && current.token === old.token) fs.rmSync(lockPath, { force: true })
+      continue
+    }
+    const live = old && old.transport !== 'inline' && old.pid !== process.pid && alive(old.pid)
     if (live) {
       const verified = old.port && await identityMatches(old)
       if (!verified) fail(5, 'DECISION_STAGE_BUSY lock identity is not verified; leave the process and lock untouched. It may be starting or belong to another process.')
@@ -160,30 +187,79 @@ async function acquireLock() {
   }
   fail(5, 'DECISION_STAGE_ERROR could not take the session lock: ' + lockPath)
 }
-await acquireLock()
-process.on('exit', () => { const l = readLock(); if (l && l.pid === process.pid) fs.rmSync(lockPath, { force: true }) })
+if (pending) {
+  try {
+    const lock = readLock()
+    if (!lock || lock.token !== TOKEN || lock.session !== SESSION_KEY || lock.transport !== 'inline') throw new Error('stale or already accepted round')
+    const body = JSON.parse(fs.readFileSync(flag('--accept', ''), 'utf8'))
+    if (body.token !== TOKEN) throw new Error('stale round token')
+    const canonical = canonicalBody(body)
+    const claim = lockPath + '.accept'
+    const fd = fs.openSync(claim, 'wx')
+    try {
+      const current = readLock()
+      if (!current || current.token !== TOKEN) throw new Error('stale round')
+      fs.writeFileSync(pending.answersPath, JSON.stringify(canonical, null, 2), 'utf8')
+      recordAnswers(canonical)
+      out(answersBlock(canonical))
+      fs.rmSync(lockPath, { force: true })
+    } finally { fs.closeSync(fd); fs.rmSync(claim, { force: true }) }
+    return // Acceptance has no server to stop; allow stdout to flush naturally.
+  } catch (e) { fail(2, 'DECISION_STAGE_ERROR ' + e.message) }
+}
+// Acceptance and replacement share one atomic guard, including the check/remove interval.
+const mutationClaim = lockPath + '.accept'
+fs.mkdirSync(LOCK_DIR, { recursive: true })
+let mutationFd
+try { mutationFd = fs.openSync(mutationClaim, 'wx') }
+catch (e) { fail(5, 'DECISION_STAGE_BUSY another command is accepting or replacing this round') }
+// acquireLock can exit with BUSY, so finally alone is insufficient for releasing our claim.
+const releaseMutation = () => {
+  if (mutationFd === undefined) return
+  fs.closeSync(mutationFd); mutationFd = undefined; fs.rmSync(mutationClaim, { force: true })
+}
+process.on('exit', releaseMutation)
+try { await acquireLock() }
+finally { releaseMutation() }
+process.on('exit', () => { const l = readLock(); if (l && l.pid === process.pid && l.transport !== 'inline') fs.rmSync(lockPath, { force: true }) })
 
 // Outputs go to the temp folder, one dir per run, even if the spec itself lives somewhere else.
 sweep()
-const runDir = path.join(ROOT, 'runs', `${stamp()}-${path.basename(path.dirname(specPath)).slice(0, 40).replace(/[^A-Za-z0-9_-]/g, '-')}`)
+const runDir = path.join(ROOT, 'runs', `${stamp()}-${TOKEN}-${path.basename(path.dirname(specPath)).slice(0, 40).replace(/[^A-Za-z0-9_-]/g, '-')}`)
 fs.mkdirSync(runDir, { recursive: true })
 const pagePath = path.join(runDir, 'page.html')
 const outPath = path.join(runDir, 'answers.json')
 fs.writeFileSync(pagePath, html, 'utf8') // a copy to look at; the server serves from memory
 
 const minutes = Number(flag('--minutes', '60'))
+if (useInline) {
+  const expiresAt = Date.now() + (Number.isFinite(minutes) && minutes > 0 ? minutes : 60) * 60000
+  const roundPath = path.join(runDir, 'round.json')
+  fs.writeFileSync(roundPath, JSON.stringify({ transport: 'inline', session: SESSION_KEY, token: TOKEN, expiresAt, spec, answersPath: outPath }), 'utf8')
+  writeLock({ transport: 'inline', expiresAt, roundPath })
+  recordOpen()
+  out(`DECISION_STAGE_HTML=${pagePath}`)
+  out(`DECISION_STAGE_ROUND=${roundPath}`)
+  out(`DECISION_STAGE_LOG=${memPath}`)
+  out('Read the complete UTF-8 HTML and call the DIRECT openchamber_render tool: render.page with awaitAnswer:true. Render is intentionally absent from Code Mode execute/search; an empty search is NOT failure. Read truncation or console encoding issues are NOT rendering failure: read remaining slices without rewriting HTML. Do not start a browser or server. Accept returned data using --accept <answer.json> --round <round.json>.')
+  return // Let completed HTTP/stdio handles settle naturally on Windows.
+}
 let port = 0
 let done = false
 
 function answersBlock(body) {
-  const lines = ['DECISION_STAGE_ANSWERS_BEGIN', `round_id: ${TOKEN}`, `page: ${spec.title}`, `answers_file: ${outPath} (temporary; record the decisions in the project's own log, not here)`]
+  const lines = ['DECISION_STAGE_ANSWERS_BEGIN', `round_id: ${TOKEN}`, `page: ${spec.title}`, `answers_file: ${pending ? pending.answersPath : outPath} (temporary; record the decisions in the project's own log, not here)`]
   for (const a of body.answers) {
     lines.push('', `[${a.id}] ${a.title}`)
     lines.push(a.choice ? `  choice: ${a.choice.label} (id=${a.choice.id})` : '  choice: (none, see note)')
     if (a.note) lines.push(`  note: ${a.note.replace(/\r?\n/g, '\n        ')}`)
   }
   if (body.general) lines.push('', `general_note: ${body.general}`)
+  for (const f of body.section_feedback || []) {
+    lines.push('', `[section ${f.section}] ${f.title}`, `  feedback: ${f.kind}`, `  note: ${f.note || '(no note)'}`)
+  }
   const ask = body.answers.filter(a => a.choice && a.choice.id === 'explain').map(a => a.id)
+  ask.push(...(body.section_feedback || []).filter(f => f.kind === 'explain').map(f => `section-${f.section}`))
   // An "explain" choice is not an answer. Spell it out so it cannot be mistaken for a decision.
   lines.push('', ask.length ? `needs_more_explanation: ${ask.join(', ')}` : 'needs_more_explanation: (none)')
   if (!ask.length) {
@@ -235,6 +311,9 @@ function recordAnswers(body) {
       const decided = !explain && (a.choice || a.note)
       upsert(e, { id: a.id, title: a.title, status: decided ? 'decided' : 'open', choice: explain ? '(asked for more explanation)' : a.choice ? a.choice.label : '', note: a.note || '', at: new Date().toISOString() })
     }
+    for (const f of body.section_feedback || []) {
+      upsert(e, { id: `feedback-${TOKEN}-${f.section}-${f.kind}`, type: 'section_feedback', section: f.section, title: f.title, kind: f.kind, status: 'open', choice: '', note: f.note, at: new Date().toISOString() })
+    }
     writeMem(e)
   } catch (err) { /* see above */ }
 }
@@ -270,7 +349,18 @@ function canonicalBody(b) {
     if (!choice && !note) throw new Error('answer or note required')
     return { id: d.id, title: d.title, choice, note }
   })
-  return { roundId: TOKEN, submittedAt: new Date().toISOString(), page: spec.title, answers, general: (b.general || '').trim() }
+  const seen = new Set()
+  if (b.section_feedback !== undefined && !Array.isArray(b.section_feedback)) throw new Error('invalid section feedback')
+  const section_feedback = (b.section_feedback || []).map(f => {
+    if (!f || !Number.isInteger(f.section) || f.section < 1 || f.section > spec.sections.length
+      || spec.decisions.some(d => d.section === f.section) || !['explain', 'comment'].includes(f.kind)
+      || typeof f.note !== 'string' || (f.kind === 'comment' && !f.note.trim())) throw new Error('invalid section feedback')
+    const key = f.section // one feedback type per section
+    if (seen.has(key)) throw new Error('duplicate section feedback')
+    seen.add(key)
+    return { section: f.section, title: spec.sections[f.section - 1].title, kind: f.kind, note: f.note.trim() }
+  })
+  return { roundId: TOKEN, submittedAt: new Date().toISOString(), page: spec.title, answers, section_feedback, general: (b.general || '').trim() }
 }
 
 // LAN exposure is OFF by default: the page listens on 127.0.0.1 only. --expose (only when the user asks for it) makes it
@@ -397,3 +487,5 @@ function onListening() {
 }
 listen(0)
 setTimeout(() => { out('DECISION_STAGE_TIMEOUT no submit within ' + minutes + ' minutes'); process.exit(3) }, minutes * 60_000)
+}
+await main()

@@ -24,6 +24,9 @@ const ID = /^[A-Za-z0-9_-]+$/
 
 export const STR = {
   'zh-TW': {
+    completeBeforeSend: '送出前，還需要完成：', decisionRequired: '請選一個答案，或填寫備註', feedbackTypeRequired: '請選擇回饋類型', feedbackNoteRequired: '請填寫問題或意見，或移除此回饋',
+    feedbackButton: '提問／回饋', feedbackQuestion: '你想針對這段說明提出什麼？（單選）', sectionExplainDesc: '請 AI 補充圖解或示範；下方可選填不清楚之處。', sectionCommentDesc: '提出問題、質疑或更正；請在下方填寫內容。',
+    sectionExplain: '需要進一步解釋', sectionComment: '提供意見／提問', commentHint: '你的問題、意見、質疑或更正', commentRequired: '請選擇回饋類型；提供意見時需填寫內容，或移除此回饋。', removeFeedback: '移除此回饋', submitSummary: '已送出決策與說明回饋',
     summary: '核心衝突，一句話：', verified: '已查證', unverified: '還沒查證',
     claim: '內容', source: '依據（這次讀過、跑過什麼）', howToVerify: '怎麼驗證', none: '（沒有）',
     simulated: '模擬', pickOne: '選一個看看', result: '結果',
@@ -41,6 +44,9 @@ export const STR = {
     copy: '複製答案', copied: '已複製，貼到 OpenCode 即可。', copyFailed: '複製失敗，請手動選取文字。',
   },
   en: {
+    completeBeforeSend: 'Before sending, complete:', decisionRequired: 'Choose an answer or write a note', feedbackTypeRequired: 'Choose a feedback type', feedbackNoteRequired: 'Write your question or comment, or remove this feedback',
+    feedbackButton: 'Ask / give feedback', feedbackQuestion: 'What would you like to do with this explanation? (choose one)', sectionExplainDesc: 'Ask for a visual explanation; an additional note is optional.', sectionCommentDesc: 'Ask a question, object or correct; write your feedback below.',
+    sectionExplain: 'Explain this section', sectionComment: 'Comment / ask a question', commentHint: 'Your question, objection or correction', commentRequired: 'Write a comment or remove that feedback card.', removeFeedback: 'Remove feedback', submitSummary: 'Decisions and section feedback submitted',
     summary: 'The core conflict, in one sentence: ', verified: 'Verified', unverified: 'Not verified yet',
     claim: 'Claim', source: 'Basis (what was read or run this session)', howToVerify: 'How to verify', none: '(none)',
     simulated: 'simulated', pickOne: 'Pick one to see it', result: 'Result',
@@ -106,7 +112,7 @@ export function normalize(raw) {
   }
 
   const decisions = []
-  if (!Array.isArray(raw.decisions) || raw.decisions.length === 0) e('decisions', 'required, at least one decision for the user')
+  if (!Array.isArray(raw.decisions)) e('decisions', 'required array; use [] for explanation-only follow-ups')
   else {
     const seen = new Set()
     raw.decisions.forEach((d, i) => {
@@ -286,8 +292,9 @@ export function render(spec, opts = {}) {
     const tag = k
       ? `<a class="sec-tag sec-ask" href="#" data-goto-decision="${i + 1}">${esc(fmtN(t.hasQ, k))}</a>`
       : `<span class="sec-tag sec-read">${esc(t.readOnly)}</span>`
-    return `<section id="sec-${i + 1}"><h2><i>${i + 1}</i>${inline(s.title)}${tag}</h2>${s.blocks.map(b => blockHtml(b, t, ++n)).join('')}</section>`
-  }).join('')
+    const actions = k ? '' : `<button class="section-feedback-button" type="button" data-section-feedback="${i + 1}" aria-pressed="false">${esc(t.feedbackButton)} ↗</button>`
+    return `<section id="sec-${i + 1}"><h2 class="section-heading"><span><i>${i + 1}</i>${inline(s.title)}${tag}</span>${actions}</h2>\n${s.blocks.map(b => blockHtml(b, t, ++n)).join('\n')}\n</section>`
+  }).join('\n')
   const vv = (items, cols) => items.length
     ? `<table><thead><tr>${cols.map(c => `<th>${esc(t[c])}</th>`).join('')}</tr></thead><tbody>${items.map(it => `<tr>${cols.map(c => `<td>${inline(it[c === 'claim' ? 'claim' : c === 'source' ? 'source' : 'howToVerify'])}</td>`).join('')}</tr>`).join('')}</tbody></table>`
     : `<p class="none">${esc(t.none)}</p>`
@@ -299,6 +306,7 @@ export function render(spec, opts = {}) {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${sessionTitle ? esc(sessionTitle) + ' · ' : ''}${esc(spec.title)}</title>
 <style>${read('page.css')}</style>
+${opts.transport === 'inline' ? `<style id="inline-layout">html,body{background:transparent!important}body{padding:0!important}main{margin:0;padding:0 0 16px;max-width:100%;min-width:0}body{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px}#dd-panel{position:static!important;inset:auto!important;width:auto!important;min-width:0;margin:0!important;align-self:start;border:0!important;border-radius:8px;box-shadow:none!important;font-size:.9rem}#dd-panel .dd-body{overflow:visible}h1{font-size:1.25rem}h2{font-size:1.05rem}.sec-tag{float:none!important;display:block;width:fit-content}.node{min-width:0}th,td{font-size:.85rem}#dd-panel h3{font-size:1rem}#dd-panel header{font-size:1rem}#dd-panel .dd-prog,#dd-panel .dd-conn,#dd-panel .dd-msg{font-size:.85rem}@media(max-width:540px){body{display:block}#dd-panel{margin-top:16px!important}}.section-actions button{font-size:.85rem}</style>` : ''}
 </head>
 <body>
 <main>
@@ -313,7 +321,7 @@ ${sections}
 ${histHtml}
 </main>
 <script type="application/json" id="decisions">${jsonForScript(spec.decisions)}</script>
-<script type="application/json" id="dd-meta">${jsonForScript({ token: typeof opts.token === 'string' ? opts.token : '' })}</script>
+<script type="application/json" id="dd-meta">${jsonForScript({ token: typeof opts.token === 'string' ? opts.token : '', transport: opts.transport || 'browser', sections: spec.sections.map((s, i) => ({ section: i + 1, title: s.title })).filter(s => !spec.decisions.some(d => d.section === s.section)) })}</script>
 <script type="application/json" id="dd-i18n">${jsonForScript(dict)}</script>
 <script>${read('widgets.js')}</script>
 <style id="dd-style">${read('panel.css')}</style>

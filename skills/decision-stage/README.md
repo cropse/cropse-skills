@@ -78,6 +78,30 @@ Ask your agent to use **decision-stage**. The behavioral instructions are in [`S
 
 If **any** answer requests more explanation, the response omits both the consolidation reminder and its decision-log path. The log is still saved. Otherwise the path follows a conditional reminder; the agent must still notice objections and other unresolved issues rather than assume the conversation is finished.
 
+## Inline pages in OpenChamber
+
+Transport selection is deterministic code, not an AI judgment. Run `node scripts/decision-stage.mjs --select` to print only `{host, transport}` without network access or side effects. The normal spec command applies the same rules automatically:
+
+- Complete `OPENCHAMBER_AGENT_TOOL_URL`, `OPENCHAMBER_AGENT_TOOL_TOKEN`, `OPENCODE_SESSION_ID` → `openchamber` / `inline`.
+- `CLAUDECODE=1` or `CLAUDE_CODE_CHILD_SESSION=1` → `claude` / `browser`.
+- Nonblank `CODEX_THREAD_ID` → `codex` / `browser`.
+- No complete marker → `unknown` / `browser`; multiple hosts → `ambiguous` / `browser`.
+
+These are advisory inherited process markers, not authentication or proof of UI capabilities; no credential values are printed. Claude/Codex native rendering adapters are not implemented. OpenChamber inline mode prepares HTML but still requires the agent's actual render-tool call because the chat UI draws that call's stored input. If rendering is unavailable, use `--browser` explicitly. `--inline` is a manual override; `--browser` or `--expose` selects browser mode and must not be combined with `--inline`. No browser window or local server starts in inline mode.
+
+The same JSON spec, renderer, answer validation and decision history serve both transports. Informational headings now have one **Ask / give feedback** button on the right. It opens a card like other questions, with **Explain this section** or **Comment / ask a question** as a single choice. Switching type or removing/reopening the card retains its text draft. Explanation notes are optional; comments require text. Feedback is submitted once with decisions, and is never treated as agreement.
+
+Agent workflow:
+
+```sh
+node scripts/decision-stage.mjs spec.json --inline
+# Read DECISION_STAGE_HTML; pass the complete HTML to render.page with awaitAnswer:true.
+# Save returned data unchanged as a temporary reply.json, then:
+node scripts/decision-stage.mjs spec.json --accept reply.json --round <DECISION_STAGE_ROUND>
+```
+
+Only explicit rendering failure (or exceeding the render tool's published HTML limit) permits fallback with `--browser --replace`. A pending user answer, chat interruption, or cancellation is not rendering failure. A delivered inline answer reappears read-only after reload. Canonical acceptance rejects stale, expired or already accepted rounds and does not dispatch another session prompt.
+
 ## Run the script directly
 
 From the `skills/decision-stage` directory:
@@ -90,7 +114,7 @@ This prints a temporary `spec.json` path copied from [`template.spec.json`](temp
 
 ```sh
 node scripts/decision-stage.mjs "/path/to/spec.json" --check
-node scripts/decision-stage.mjs "/path/to/spec.json"
+node scripts/decision-stage.mjs "/path/to/spec.json" --browser
 ```
 
 The second command serves the page until submission or timeout. Run it in the background when using an agent harness. The script opens the browser itself; do not start it again merely to check that it is running.

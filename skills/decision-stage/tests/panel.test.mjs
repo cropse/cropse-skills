@@ -11,6 +11,8 @@ class Element {
   addEventListener(k,v) { this.listeners[k] = v }
   append(...kids) { this.children.push(...kids) }
   querySelectorAll() { return [] }
+  focus() {}
+  remove() { this.removed = true }
   scrollIntoView() {}
 }
 const walk = e => [e, ...(e.children || []).flatMap(walk)]

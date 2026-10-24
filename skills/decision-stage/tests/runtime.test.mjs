@@ -49,7 +49,15 @@ async function setup(t) {
     return c
   }
   const memory = async () => JSON.parse(await fs.readFile(path.join(root, 'memory', sid + '.json'), 'utf8')).entries
-  return { sid, start, memory }
+  async function command(args, extraEnv = {}) {
+    const env = { ...process.env, OPENCODE_SESSION_ID: sid }
+    delete env.OPENCHAMBER_AGENT_TOOL_URL; delete env.OPENCHAMBER_AGENT_TOOL_TOKEN
+    const c = spawn(process.execPath, [script, ...args], { env: { ...env, ...extraEnv } }); children.push(c)
+    c.output = ''; c.stdout.on('data', d => c.output += d); c.stderr.on('data', d => c.output += d)
+    const deadline = setTimeout(() => c.kill(), 3000)
+    await once(c, 'exit'); clearTimeout(deadline); return c
+  }
+  return { sid, start, memory, command, dir }
 }
 const answer = (c, id = 'decision-a', choice = 'yes', extra = {}) => ({ token: c.token, answers: [{ id, title: 'FORGED TITLE', choice: { id: choice, label: 'FORGED LABEL' }, note: 'my note' }], general: '', ...extra })
 const post = (c, body, endpoint = 'submit') => fetch(c.url + endpoint, { method: 'POST', headers: { 'content-type': 'application/json', origin: c.url.slice(0, -1) }, body: JSON.stringify(body) })
@@ -141,6 +149,79 @@ test('successful session delivery does not echo the full answers into shell outp
     assert.equal(output.some(s => s.includes('FULL_ANSWERS')), delivery !== 'sent')
     assert.ok(output.some(s => s.includes('round-test')))
   }
+})
+
+test('section feedback validates targets and keeps explanations unresolved', async t => {
+  const { start, memory } = await setup(t)
+  const spec = fixture()
+  spec.sections.push({ title: 'Background', blocks: [{ type: 'text', text: 'Some context' }] })
+  const c = await start(spec)
+  const feedback = (section, kind, note = '') => answer(c, 'decision-a', 'yes', { section_feedback: [{ section, kind, note, title: 'FORGED' }] })
+  for (const body of [feedback(9, 'explain'), feedback(1, 'explain'), feedback(2, 'bad'), feedback(2, 'comment', '  '), feedback(2, 'explain', 42), answer(c, 'decision-a', 'yes', { section_feedback: [{ section: 2, kind: 'explain', note: '' }, { section: 2, kind: 'comment', note: 'second type' }] })]) {
+    assert.equal((await post(c, body)).status, 400)
+  }
+  await submit(c, answer(c, 'decision-a', 'yes', { section_feedback: [{ section: 2, kind: 'explain', note: 'This is unclear' }] }))
+  assert.match(c.output, /Background/)
+  assert.match(c.output, /This is unclear/)
+  assert.doesNotMatch(c.output, /CONSOLIDATION_HINT|decision_log:/)
+  const entries = await memory()
+  assert.equal(entries.filter(x => x.type === 'section_feedback').length, 1)
+  assert.ok(entries.filter(x => x.type === 'section_feedback').every(x => x.status === 'open'))
+})
+
+test('inline preparation and acceptance share validation, history and one-active-round safety', async t => {
+  const { start, command, dir, memory } = await setup(t)
+  const input = path.join(dir, 'inline.json'); await fs.writeFile(input, JSON.stringify(fixture()))
+  const prepare = await command([input, '--inline', '--session-title', 'Inline test'])
+  assert.equal(prepare.exitCode, 0); assert.doesNotMatch(prepare.output, /DECISION_STAGE_URL=/)
+  const round = prepare.output.match(/DECISION_STAGE_ROUND=(.+)/)?.[1].trim()
+  const page = prepare.output.match(/DECISION_STAGE_HTML=(.+)/)?.[1].trim()
+  assert.ok(round); assert.ok(page)
+  const html = await fs.readFile(page, 'utf8'); assert.match(html, /"transport":"inline"/)
+  const duplicate = await command([input, '--inline']); assert.equal(duplicate.exitCode, 5)
+  const browser = await start(); assert.equal(browser.exitCode, 5)
+  const meta = JSON.parse(await fs.readFile(round, 'utf8'))
+  const reply = path.join(dir, 'reply.json')
+  await fs.writeFile(reply, JSON.stringify(answer({ token: 'stale' })))
+  assert.equal((await command([input, '--accept', reply, '--round', round])).exitCode, 2)
+  await fs.writeFile(reply, JSON.stringify(answer({ token: meta.token })))
+  const accepted = await command([input, '--accept', reply, '--round', round])
+  assert.equal(accepted.exitCode, 0); assert.match(accepted.output, /Canonical Yes/); assert.doesNotMatch(accepted.output, /FORGED/)
+  assert.equal((await memory())[0].status, 'decided')
+  assert.equal((await command([input, '--accept', reply, '--round', round])).exitCode, 2)
+  const next = await command([input, '--inline']); assert.equal(next.exitCode, 0)
+  const nextRound = next.output.match(/DECISION_STAGE_ROUND=(.+)/)[1].trim()
+  const nextPage = next.output.match(/DECISION_STAGE_HTML=(.+)/)[1].trim()
+  await fs.writeFile(reply, JSON.stringify(answer({token:JSON.parse(await fs.readFile(nextRound,'utf8')).token})))
+  assert.equal((await command([input,'--accept',reply,'--round',nextRound])).exitCode,0)
+  assert.ok(nextPage)
+})
+
+test('inline artifacts are unique and replacement cannot cross an acceptance claim', async t => {
+  const one = await setup(t), two = await setup(t)
+  const dir = one.dir, input = path.join(dir, 'shared.json'); await fs.writeFile(input, JSON.stringify(fixture()))
+  const [a,b] = await Promise.all([one.command([input,'--inline']),two.command([input,'--inline'])])
+  const roundOf = c => c.output.match(/DECISION_STAGE_ROUND=(.+)/)[1].trim()
+  assert.notEqual(roundOf(a),roundOf(b))
+  const claim = path.join(root,'locks',one.sid+'.json.accept')
+  await fs.writeFile(claim,'accepting')
+  try {
+    const replacement = await one.command([input,'--inline','--replace'])
+    assert.equal(replacement.exitCode,5)
+    const lock = JSON.parse(await fs.readFile(path.join(root,'locks',one.sid+'.json'),'utf8'))
+    assert.equal(lock.token,JSON.parse(await fs.readFile(roundOf(a),'utf8')).token)
+  } finally { await fs.rm(claim,{force:true}) }
+})
+
+test('default entry uses selector to prepare OpenChamber inline without explicit inline flag', async t => {
+  const { command, dir } = await setup(t)
+  const input = path.join(dir, 'auto.json'); await fs.writeFile(input, JSON.stringify(fixture()))
+  const c = await command([input, '--session-title', 'Auto'], { OPENCHAMBER_AGENT_TOOL_URL: 'http://127.0.0.1:1/unused', OPENCHAMBER_AGENT_TOOL_TOKEN: 'test-secret', CLAUDECODE: '', CLAUDE_CODE_CHILD_SESSION: '', CODEX_THREAD_ID: '' })
+  assert.equal(c.exitCode,0,c.output)
+  assert.match(c.output,/DECISION_STAGE_HOST=openchamber/)
+  assert.match(c.output,/DECISION_STAGE_TRANSPORT=inline/)
+  assert.match(c.output,/DECISION_STAGE_HTML=/)
+  assert.doesNotMatch(c.output,/DECISION_STAGE_URL=|test-secret/)
 })
 
 test('normal submit remains a discussion response', async t => {
